@@ -15,6 +15,7 @@ def download_youtube_video(url: str, output_dir: str) -> dict:
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
+        "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
