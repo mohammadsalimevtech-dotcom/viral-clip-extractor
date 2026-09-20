@@ -1,11 +1,11 @@
+
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 yt-dlp
 faster-whisper==1.0.3
 requests
-groq==0.11.0, httpx<0.28, pydantic-
+groq==0.11.0
+httpx<0.28
 pydantic-settings==2.5.2
 python-multipart==0.0.9
-
-
 
