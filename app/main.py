@@ -1,15 +1,14 @@
 import os
 import uuid
+import shutil
 import threading
 import traceback
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
 from app.config import settings
-from app.downloader import download_youtube_video
 from app.transcriber import transcribe
 from app.analyzer import find_viral_clips
 from app.clipper import cut_clip, segments_to_srt
@@ -32,18 +31,11 @@ app.mount("/clips", StaticFiles(directory=settings.output_dir), name="clips")
 JOBS: dict[str, dict] = {}
 
 
-class JobRequest(BaseModel):
-    youtube_url: str
-    burn_captions: bool = True
-
-
-def process_job(job_id: str, url: str, burn_captions: bool):
+def process_job(job_id: str, video_path: str, video_title: str, burn_captions: bool):
+    """Shared pipeline: transcribe -> find viral moments -> cut clips."""
     try:
-        JOBS[job_id]["status"] = "downloading"
-        video = download_youtube_video(url, settings.download_dir)
-
         JOBS[job_id]["status"] = "transcribing"
-        segments = transcribe(video["filepath"])
+        segments = transcribe(video_path)
 
         JOBS[job_id]["status"] = "analyzing"
         viral_clips = find_viral_clips(segments)
@@ -60,7 +52,7 @@ def process_job(job_id: str, url: str, burn_captions: bool):
                 segments_to_srt(segments, clip["start"], clip["end"], srt_path)
 
             cut_clip(
-                video["filepath"], clip["start"], clip["end"], out_path,
+                video_path, clip["start"], clip["end"], out_path,
                 burn_subtitles=srt_path if burn_captions else None,
             )
 
@@ -71,25 +63,43 @@ def process_job(job_id: str, url: str, burn_captions: bool):
             })
 
         JOBS[job_id]["status"] = "done"
-        JOBS[job_id]["video_title"] = video["title"]
+        JOBS[job_id]["video_title"] = video_title
         JOBS[job_id]["clips"] = results
 
     except Exception as e:
         JOBS[job_id]["status"] = "failed"
         JOBS[job_id]["error"] = str(e)
         traceback.print_exc()
+    finally:
+        # Clean up the uploaded source file once processing is done
+        try:
+            if os.path.exists(video_path):
+                os.remove(video_path)
+        except OSError:
+            pass
 
 
-@app.post("/jobs")
-def create_job(req: JobRequest):
-    if not req.youtube_url.strip():
-        raise HTTPException(status_code=400, detail="youtube_url is required")
+@app.post("/jobs/upload")
+def create_job_from_upload(
+    file: UploadFile = File(...),
+    burn_captions: bool = Form(True),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No file provided")
 
     job_id = str(uuid.uuid4())
+    ext = os.path.splitext(file.filename)[1] or ".mp4"
+    dest_path = os.path.join(settings.download_dir, f"{job_id}{ext}")
+
+    with open(dest_path, "wb") as out_file:
+        shutil.copyfileobj(file.file, out_file)
+
+    title = os.path.splitext(file.filename)[0]
+
     JOBS[job_id] = {"status": "queued", "clips": []}
 
     thread = threading.Thread(
-        target=process_job, args=(job_id, req.youtube_url, req.burn_captions), daemon=True
+        target=process_job, args=(job_id, dest_path, title, burn_captions), daemon=True
     )
     thread.start()
 
@@ -107,3 +117,4 @@ def get_job(job_id: str):
 @app.get("/")
 def root():
     return {"status": "ok", "service": "Viral Clip Extractor API"}
+                
